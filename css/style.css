@@ -1,0 +1,28 @@
+/* Arkanoid — стили страницы и игрового поля */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html, body {
+    height: 100%;
+}
+
+body {
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: monospace;
+}
+
+#game-container {
+    position: relative;
+}
+
+#game {
+    display: block;
+    background: #000;
+}
