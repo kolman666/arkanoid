@@ -233,9 +233,15 @@
             this.input = new Input(canvas);
             this.paddle = new Paddle(this.field);
             this.ball = new Ball(this.field);
-            this.input.onLaunch = () => this.ball.launch();
+            this.input.onLaunch = () => this._onLaunch();
 
             this.bricks = this._buildBricks();
+
+            // Состояние партии.
+            this.score = 0;
+            this.lives = 3;
+            this.level = 1;
+            this.state = 'ready'; // ready | playing | dead | gameover | win
 
             this.lastTime = 0;
             this._loop = this._loop.bind(this);
@@ -282,12 +288,58 @@
                 }
 
                 brick.alive = false;
+                this.score += brick.score;
                 break; // один кирпич за кадр — достаточно
+            }
+        }
+
+        get bricksLeft() {
+            let n = 0;
+            for (const b of this.bricks) if (b.alive) n++;
+            return n;
+        }
+
+        // Гибель мяча: минус жизнь, при нуле — конец игры.
+        _loseLife() {
+            this.lives--;
+            if (this.lives <= 0) {
+                this.state = 'gameover';
+            } else {
+                this.state = 'ready';
+                this.ball.stuck = true;
             }
         }
 
         start() {
             requestAnimationFrame(this._loop);
+        }
+
+        _onLaunch() {
+            if (this.state === 'ready') {
+                this.state = 'playing';
+                this.ball.launch();
+            } else if (this.state === 'gameover' || this.state === 'win') {
+                this._restart();
+            }
+        }
+
+        _restart() {
+            this.score = 0;
+            this.lives = 3;
+            this.level = 1;
+            this.bricks = this._buildBricks();
+            this.paddle.reset();
+            this.ball.stuck = true;
+            this.state = 'ready';
+        }
+
+        _nextLevel() {
+            this.level++;
+            this.bricks = this._buildBricks();
+            this.paddle.reset();
+            this.ball.stuck = true;
+            this.ball.speed += 20; // с уровнем становится быстрее
+            this.state = 'ready';
         }
 
         _loop(time) {
@@ -299,20 +351,28 @@
         }
 
         _update(dt) {
+            if (this.state === 'gameover' || this.state === 'win') return;
+
             if (this.input.mouseX !== null) this.paddle.moveTo(this.input.mouseX);
             if (this.input.left) this.paddle.move(-1, dt);
             if (this.input.right) this.paddle.move(1, dt);
 
             if (this.ball.stuck) {
                 this.ball.stickTo(this.paddle);
-            } else {
-                const alive = this.ball.update(dt);
-                this._collideBricks();
-                this.ball.bounceOffPaddle(this.paddle);
-                if (!alive) {
-                    // Пока просто возвращаем мяч на ракетку.
-                    this.ball.stuck = true;
-                }
+                return;
+            }
+
+            const alive = this.ball.update(dt);
+            this._collideBricks();
+            this.ball.bounceOffPaddle(this.paddle);
+
+            if (!alive) {
+                this._loseLife();
+                return;
+            }
+            if (this.bricksLeft === 0) {
+                if (this.level >= 4) this.state = 'win';
+                else this._nextLevel();
             }
         }
 
@@ -324,6 +384,62 @@
             this.paddle.draw(ctx);
             this.ball.draw(ctx);
             this._drawBorders();
+            this._drawHUD();
+            this._drawOverlay();
+        }
+
+        _drawHUD() {
+            const ctx = this.ctx;
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 16px monospace';
+            ctx.textBaseline = 'middle';
+
+            ctx.textAlign = 'left';
+            ctx.fillText('SCORE ' + this.score, BORDER + 6, 34);
+
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#4bc8ff';
+            ctx.fillText('LV ' + this.level, this.width / 2, 34);
+
+            // Жизни — миниатюрные ракетки справа.
+            ctx.textAlign = 'right';
+            ctx.fillStyle = '#e0483c';
+            ctx.fillText('♥'.repeat(Math.max(0, this.lives)), this.width - BORDER - 6, 34);
+        }
+
+        _drawOverlay() {
+            const ctx = this.ctx;
+            let title = null;
+            let subtitle = null;
+
+            if (this.state === 'ready') {
+                subtitle = 'ПРОБЕЛ / КЛИК — запуск мяча';
+            } else if (this.state === 'gameover') {
+                title = 'GAME OVER';
+                subtitle = 'Нажмите ПРОБЕЛ для новой игры';
+            } else if (this.state === 'win') {
+                title = 'ПОБЕДА!';
+                subtitle = 'Нажмите ПРОБЕЛ для новой игры';
+            }
+            if (!title && !subtitle) return;
+
+            if (title) {
+                ctx.fillStyle = 'rgba(0,0,0,0.55)';
+                ctx.fillRect(0, 0, this.width, this.height);
+                ctx.fillStyle = '#e0d43c';
+                ctx.font = 'bold 40px monospace';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(title, this.width / 2, this.height / 2 - 20);
+            }
+            if (subtitle) {
+                ctx.fillStyle = '#fff';
+                ctx.font = '15px monospace';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                const y = title ? this.height / 2 + 24 : this.paddle.y - 40;
+                ctx.fillText(subtitle, this.width / 2, y);
+            }
         }
 
         _drawBorders() {
