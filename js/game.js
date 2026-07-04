@@ -1,4 +1,4 @@
-// Arkanoid — игровой цикл, поле, ракетка (Vaus) и мяч.
+// Arkanoid — игровой цикл, поле, ракетка (Vaus), мяч и кирпичи.
 // Весь функционал изолирован внутри класса Arkanoid, чтобы не пересекаться
 // с чужим кодом на странице.
 
@@ -6,6 +6,26 @@
     'use strict';
 
     const BORDER = 12;
+
+    // Параметры сетки кирпичей.
+    const BRICK = {
+        cols: 11,
+        rows: 8,
+        top: 60,
+        gap: 3,
+        height: 20
+    };
+
+    // Палитра кирпичей: цвет + очки за разрушение.
+    const BRICK_COLORS = [
+        { fill: '#e0483c', score: 90 }, // красный
+        { fill: '#e08a3c', score: 80 }, // оранжевый
+        { fill: '#3c74e0', score: 70 }, // синий
+        { fill: '#40c060', score: 60 }, // зелёный
+        { fill: '#d84cd8', score: 50 }, // розовый
+        { fill: '#e0d43c', score: 40 }, // жёлтый
+        { fill: '#4bc8ff', score: 30 }  // голубой
+    ];
 
     // ---- Ракетка игрока (Vaus) -------------------------------------------
     class Paddle {
@@ -142,6 +162,33 @@
         }
     }
 
+    // ---- Кирпич ----------------------------------------------------------
+    class Brick {
+        constructor(x, y, w, h, color) {
+            this.x = x;
+            this.y = y;
+            this.w = w;
+            this.h = h;
+            this.fill = color.fill;
+            this.score = color.score;
+            this.alive = true;
+        }
+
+        draw(ctx) {
+            if (!this.alive) return;
+            const { x, y, w, h } = this;
+            ctx.fillStyle = this.fill;
+            ctx.fillRect(x, y, w, h);
+            // Объёмная фаска: светлый верх/лево, тёмный низ/право.
+            ctx.fillStyle = 'rgba(255,255,255,0.35)';
+            ctx.fillRect(x, y, w, 2);
+            ctx.fillRect(x, y, 2, h);
+            ctx.fillStyle = 'rgba(0,0,0,0.30)';
+            ctx.fillRect(x, y + h - 2, w, 2);
+            ctx.fillRect(x + w - 2, y, 2, h);
+        }
+    }
+
     // ---- Ввод ------------------------------------------------------------
     class Input {
         constructor(canvas) {
@@ -188,8 +235,55 @@
             this.ball = new Ball(this.field);
             this.input.onLaunch = () => this.ball.launch();
 
+            this.bricks = this._buildBricks();
+
             this.lastTime = 0;
             this._loop = this._loop.bind(this);
+        }
+
+        // Строит сетку кирпичей: каждая строка — свой цвет.
+        _buildBricks() {
+            const bricks = [];
+            const usable = this.field.right - this.field.left;
+            const w = (usable - BRICK.gap * (BRICK.cols + 1)) / BRICK.cols;
+            for (let r = 0; r < BRICK.rows; r++) {
+                const color = BRICK_COLORS[r % BRICK_COLORS.length];
+                for (let c = 0; c < BRICK.cols; c++) {
+                    const x = this.field.left + BRICK.gap + c * (w + BRICK.gap);
+                    const y = BRICK.top + r * (BRICK.height + BRICK.gap);
+                    bricks.push(new Brick(x, y, w, BRICK.height, color));
+                }
+            }
+            return bricks;
+        }
+
+        // Столкновение мяча с кирпичами. Отражаем по оси наименьшего
+        // перекрытия, чтобы отскок выглядел естественно.
+        _collideBricks() {
+            const b = this.ball;
+            for (const brick of this.bricks) {
+                if (!brick.alive) continue;
+                if (b.x + b.radius < brick.x || b.x - b.radius > brick.x + brick.w ||
+                    b.y + b.radius < brick.y || b.y - b.radius > brick.y + brick.h) {
+                    continue;
+                }
+
+                const overlapL = (b.x + b.radius) - brick.x;
+                const overlapR = (brick.x + brick.w) - (b.x - b.radius);
+                const overlapT = (b.y + b.radius) - brick.y;
+                const overlapB = (brick.y + brick.h) - (b.y - b.radius);
+                const minX = Math.min(overlapL, overlapR);
+                const minY = Math.min(overlapT, overlapB);
+
+                if (minX < minY) {
+                    b.vx = -b.vx;
+                } else {
+                    b.vy = -b.vy;
+                }
+
+                brick.alive = false;
+                break; // один кирпич за кадр — достаточно
+            }
         }
 
         start() {
@@ -213,6 +307,7 @@
                 this.ball.stickTo(this.paddle);
             } else {
                 const alive = this.ball.update(dt);
+                this._collideBricks();
                 this.ball.bounceOffPaddle(this.paddle);
                 if (!alive) {
                     // Пока просто возвращаем мяч на ракетку.
@@ -225,6 +320,7 @@
             const ctx = this.ctx;
             ctx.fillStyle = '#0b0b16';
             ctx.fillRect(0, 0, this.width, this.height);
+            for (const brick of this.bricks) brick.draw(ctx);
             this.paddle.draw(ctx);
             this.ball.draw(ctx);
             this._drawBorders();
