@@ -97,6 +97,13 @@
 
             ctx.fillStyle = '#4bc8ff';
             ctx.fillRect(x + w / 2 - 6, y + 4, 12, h - 8);
+
+            // Пушки при активном лазере.
+            if (this.laser) {
+                ctx.fillStyle = '#d0d0e0';
+                ctx.fillRect(x + 8, y - 6, 4, 6);
+                ctx.fillRect(x + w - 12, y - 6, 4, 6);
+            }
         }
     }
 
@@ -280,6 +287,30 @@
         }
     }
 
+    // ---- Лазерный выстрел ------------------------------------------------
+    class Laser {
+        constructor(x, y) {
+            this.x = x;
+            this.y = y;
+            this.w = 3;
+            this.h = 12;
+            this.vy = -520;
+            this.dead = false;
+        }
+
+        update(dt, top) {
+            this.y += this.vy * dt;
+            if (this.y + this.h < top) this.dead = true;
+        }
+
+        draw(ctx) {
+            ctx.fillStyle = '#ff5a4a';
+            ctx.fillRect(this.x - this.w / 2, this.y, this.w, this.h);
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(this.x - 1, this.y, 1, this.h);
+        }
+    }
+
     // ---- Ввод ------------------------------------------------------------
     class Input {
         constructor(canvas) {
@@ -325,6 +356,8 @@
             this.paddle = new Paddle(this.field);
             this.balls = [new Ball(this.field)];
             this.capsules = [];
+            this.lasers = [];
+            this.fireCooldown = 0;
             this.input.onLaunch = () => this._onLaunch();
 
             this.bricks = this._buildBricks();
@@ -457,6 +490,7 @@
         _loseLife() {
             this.lives--;
             this.capsules.length = 0;
+            this.lasers.length = 0;
             this.paddle.reset();
             this.balls = [new Ball(this.field)];
             if (this.lives <= 0) {
@@ -475,9 +509,12 @@
                 this.state = 'playing';
                 for (const b of this.balls) b.launch();
             } else if (this.state === 'playing') {
-                // Отпустить пойманные мячи (режим Catch).
-                for (const b of this.balls) {
-                    if (b.stuck) { b.stuck = false; b.launch(); b.stickOffset = 0; }
+                const stuck = this.balls.filter((b) => b.stuck);
+                if (stuck.length) {
+                    // Отпустить пойманные мячи (режим Catch).
+                    for (const b of stuck) { b.stuck = false; b.launch(); b.stickOffset = 0; }
+                } else if (this.paddle.laser) {
+                    this._fireLasers();
                 }
             } else if (this.state === 'gameover' || this.state === 'win') {
                 this._restart();
@@ -489,6 +526,7 @@
             this.lives = 3;
             this.level = 1;
             this.capsules.length = 0;
+            this.lasers.length = 0;
             this.bricks = this._buildBricks();
             this.paddle.reset();
             this.balls = [new Ball(this.field)];
@@ -498,6 +536,7 @@
         _nextLevel() {
             this.level++;
             this.capsules.length = 0;
+            this.lasers.length = 0;
             this.bricks = this._buildBricks();
             this.paddle.reset();
             const ball = new Ball(this.field);
@@ -543,11 +582,44 @@
             }
 
             this._updateCapsules(dt);
+            this._updateLasers(dt);
 
             if (this.bricksLeft === 0) {
                 if (this.level >= 4) this.state = 'win';
                 else this._nextLevel();
             }
+        }
+
+        _fireLasers() {
+            if (this.fireCooldown > 0) return;
+            const p = this.paddle;
+            this.lasers.push(new Laser(p.x + 10, p.y));
+            this.lasers.push(new Laser(p.x + p.width - 10, p.y));
+            this.fireCooldown = 0.18;
+        }
+
+        _updateLasers(dt) {
+            if (this.fireCooldown > 0) this.fireCooldown -= dt;
+            const kept = [];
+            for (const laser of this.lasers) {
+                laser.update(dt, this.field.top);
+                if (laser.dead) continue;
+                // Столкновение с кирпичами.
+                let hit = false;
+                for (const brick of this.bricks) {
+                    if (!brick.alive) continue;
+                    if (laser.x > brick.x && laser.x < brick.x + brick.w &&
+                        laser.y < brick.y + brick.h && laser.y > brick.y) {
+                        brick.alive = false;
+                        this.score += brick.score;
+                        this._maybeDropCapsule(brick);
+                        hit = true;
+                        break;
+                    }
+                }
+                if (!hit) kept.push(laser);
+            }
+            this.lasers = kept;
         }
 
         _updateCapsules(dt) {
@@ -570,6 +642,7 @@
             ctx.fillRect(0, 0, this.width, this.height);
             for (const brick of this.bricks) brick.draw(ctx);
             for (const cap of this.capsules) cap.draw(ctx);
+            for (const laser of this.lasers) laser.draw(ctx);
             this.paddle.draw(ctx);
             for (const b of this.balls) b.draw(ctx);
             this._drawBorders();
