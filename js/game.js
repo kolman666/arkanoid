@@ -447,7 +447,8 @@
             this.score = 0;
             this.lives = 3;
             this.level = 1;
-            this.state = 'ready'; // ready | playing | dead | gameover | win
+            this.state = 'menu'; // menu | ready | playing | gameover | win
+            this.time = 0; // для мигающих подсказок
 
             this.bricks = this._buildBricks();
 
@@ -595,7 +596,9 @@
         }
 
         _onLaunch() {
-            if (this.state === 'ready') {
+            if (this.state === 'menu') {
+                this.state = 'ready';
+            } else if (this.state === 'ready') {
                 this.state = 'playing';
                 for (const b of this.balls) b.launch();
             } else if (this.state === 'playing') {
@@ -644,7 +647,8 @@
         }
 
         _update(dt) {
-            if (this.state === 'gameover' || this.state === 'win') return;
+            this.time += dt;
+            if (this.state === 'menu' || this.state === 'gameover' || this.state === 'win') return;
 
             if (this.input.mouseX !== null) this.paddle.moveTo(this.input.mouseX);
             if (this.input.left) this.paddle.move(-1, dt);
@@ -765,6 +769,12 @@
 
         _drawOverlay() {
             const ctx = this.ctx;
+
+            if (this.state === 'menu') {
+                this._drawMenu();
+                return;
+            }
+
             let title = null;
             let subtitle = null;
 
@@ -795,6 +805,84 @@
                 ctx.textBaseline = 'middle';
                 const y = title ? this.height / 2 + 24 : this.paddle.y - 40;
                 ctx.fillText(subtitle, this.width / 2, y);
+            }
+        }
+
+        // Стартовый экран с обучением: заголовок, управление и легенда бонусов.
+        _drawMenu() {
+            const ctx = this.ctx;
+            const cx = this.width / 2;
+
+            ctx.fillStyle = 'rgba(4,4,12,0.82)';
+            ctx.fillRect(0, 0, this.width, this.height);
+
+            // Заголовок с лёгкой пульсацией.
+            const pulse = 1 + 0.03 * Math.sin(this.time * 3);
+            ctx.save();
+            ctx.translate(cx, 120);
+            ctx.scale(pulse, pulse);
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = '#e0d43c';
+            ctx.font = 'bold 52px monospace';
+            ctx.fillText('ARKANOID', 0, 0);
+            ctx.restore();
+
+            ctx.textAlign = 'center';
+            ctx.fillStyle = '#4bc8ff';
+            ctx.font = '15px monospace';
+            ctx.fillText('P E P P E R S   E D I T I O N', cx, 158);
+
+            // Управление.
+            ctx.fillStyle = '#fff';
+            ctx.font = '14px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('УПРАВЛЕНИЕ', cx, 210);
+            ctx.fillStyle = '#c8c8e0';
+            ctx.font = '13px monospace';
+            ctx.fillText('← →  или  мышь — движение ракетки', cx, 236);
+            ctx.fillText('ПРОБЕЛ / КЛИК — запуск мяча и выстрел', cx, 258);
+
+            // Легенда бонусов.
+            ctx.fillStyle = '#fff';
+            ctx.font = '14px monospace';
+            ctx.fillText('БОНУСЫ', cx, 300);
+
+            const legend = [
+                ['E', '#e08a3c', 'шире ракетка'],
+                ['C', '#40c060', 'ловить мяч'],
+                ['S', '#3c74e0', 'замедление'],
+                ['D', '#4bc8ff', 'тройной мяч'],
+                ['L', '#e0483c', 'лазер'],
+                ['P', '#d0d0e0', 'доп. жизнь']
+            ];
+            ctx.textAlign = 'left';
+            ctx.font = 'bold 12px monospace';
+            const startY = 326;
+            for (let i = 0; i < legend.length; i++) {
+                const [letter, color, text] = legend[i];
+                const col = i % 2;
+                const rowY = startY + Math.floor(i / 2) * 30;
+                const x = cx - 150 + col * 160;
+                ctx.fillStyle = color;
+                roundRect(ctx, x, rowY - 9, 22, 14, 5);
+                ctx.fill();
+                ctx.fillStyle = '#111';
+                ctx.textAlign = 'center';
+                ctx.fillText(letter, x + 11, rowY - 1);
+                ctx.fillStyle = '#c8c8e0';
+                ctx.textAlign = 'left';
+                ctx.font = '12px monospace';
+                ctx.fillText(text, x + 30, rowY - 1);
+                ctx.font = 'bold 12px monospace';
+            }
+
+            // Мигающая подсказка старта.
+            if (Math.sin(this.time * 4) > -0.3) {
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#e0d43c';
+                ctx.font = 'bold 18px monospace';
+                ctx.fillText('НАЖМИТЕ ПРОБЕЛ', cx, 470);
             }
         }
 
