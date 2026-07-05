@@ -31,19 +31,36 @@
     class Paddle {
         constructor(field) {
             this.field = field;
-            this.width = 84;
+            this.baseWidth = 84;
             this.height = 16;
             this.speed = 480;
             this.reset();
         }
 
         reset() {
+            this.width = this.baseWidth;
+            this.targetWidth = this.baseWidth;
+            this.sticky = false;   // режим «ловушка» (бонус Catch)
+            this.laser = false;    // режим лазера (бонус Laser)
             this.x = (this.field.left + this.field.right) / 2 - this.width / 2;
             this.y = this.field.bottom - 48;
         }
 
         get centerX() {
             return this.x + this.width / 2;
+        }
+
+        expand() { this.targetWidth = Math.min(140, this.targetWidth + 36); }
+        shrinkToBase() { this.targetWidth = this.baseWidth; }
+
+        // Плавная анимация изменения ширины вокруг центра.
+        update(dt) {
+            if (Math.abs(this.width - this.targetWidth) > 0.5) {
+                const cx = this.centerX;
+                this.width += (this.targetWidth - this.width) * Math.min(1, dt * 10);
+                this.x = cx - this.width / 2;
+                this._clamp();
+            }
         }
 
         moveTo(centerX) {
@@ -90,10 +107,20 @@
             this.radius = 7;
             this.speed = 300;
             this.stuck = true; // «приклеен» к ракетке до запуска
+            this.stickOffset = 0;
             this.vx = 0;
             this.vy = 0;
             this.x = 0;
             this.y = 0;
+        }
+
+        // Поворачивает вектор скорости на заданный угол (для мультимяча).
+        rotate(rad) {
+            const cos = Math.cos(rad), sin = Math.sin(rad);
+            const vx = this.vx * cos - this.vy * sin;
+            const vy = this.vx * sin + this.vy * cos;
+            this.vx = vx;
+            this.vy = vy;
         }
 
         launch() {
@@ -141,10 +168,15 @@
             this.vx = Math.sin(angle) * this.speed;
             this.vy = -Math.abs(Math.cos(angle) * this.speed);
             this.y = paddle.y - this.radius - 0.5;
+
+            if (paddle.sticky) {
+                this.stuck = true;
+                this.stickOffset = this.x - paddle.centerX;
+            }
         }
 
         stickTo(paddle) {
-            this.x = paddle.centerX;
+            this.x = paddle.centerX + (this.stickOffset || 0);
             this.y = paddle.y - this.radius - 1;
         }
 
@@ -186,6 +218,65 @@
             ctx.fillStyle = 'rgba(0,0,0,0.30)';
             ctx.fillRect(x, y + h - 2, w, 2);
             ctx.fillRect(x + w - 2, y, 2, h);
+        }
+    }
+
+    // ---- Бонусы (капсулы) ------------------------------------------------
+    // Тип: буква, цвет, вероятность выпадения.
+    const POWERUPS = [
+        { type: 'expand', letter: 'E', color: '#e08a3c' }, // расширить ракетку
+        { type: 'catch',  letter: 'C', color: '#40c060' }, // ловить мяч
+        { type: 'slow',   letter: 'S', color: '#3c74e0' }, // замедлить мяч
+        { type: 'multi',  letter: 'D', color: '#4bc8ff' }, // тройной мяч
+        { type: 'laser',  letter: 'L', color: '#e0483c' }, // лазер
+        { type: 'life',   letter: 'P', color: '#d0d0e0' }  // доп. жизнь
+    ];
+
+    class Capsule {
+        constructor(x, y, def) {
+            this.x = x;
+            this.y = y;
+            this.w = 30;
+            this.h = 14;
+            this.vy = 130;
+            this.type = def.type;
+            this.letter = def.letter;
+            this.color = def.color;
+            this.dead = false;
+            this.phase = Math.random() * Math.PI * 2;
+        }
+
+        update(dt, bottom) {
+            this.y += this.vy * dt;
+            this.phase += dt * 8;
+            if (this.y > bottom) this.dead = true;
+        }
+
+        caught(paddle) {
+            return this.y + this.h >= paddle.y &&
+                this.y <= paddle.y + paddle.height &&
+                this.x + this.w > paddle.x &&
+                this.x < paddle.x + paddle.width;
+        }
+
+        draw(ctx) {
+            const { x, y, w, h } = this;
+            // Пульсирующее свечение капсулы.
+            const glow = 0.6 + 0.4 * Math.sin(this.phase);
+            ctx.fillStyle = this.color;
+            ctx.globalAlpha = glow;
+            roundRect(ctx, x, y, w, h, 7);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = 'rgba(255,255,255,0.4)';
+            roundRect(ctx, x, y, w, 3, 2);
+            ctx.fill();
+            // Буква бонуса.
+            ctx.fillStyle = '#111';
+            ctx.font = 'bold 11px monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(this.letter, x + w / 2, y + h / 2 + 1);
         }
     }
 
@@ -232,7 +323,8 @@
 
             this.input = new Input(canvas);
             this.paddle = new Paddle(this.field);
-            this.ball = new Ball(this.field);
+            this.balls = [new Ball(this.field)];
+            this.capsules = [];
             this.input.onLaunch = () => this._onLaunch();
 
             this.bricks = this._buildBricks();
@@ -263,10 +355,9 @@
             return bricks;
         }
 
-        // Столкновение мяча с кирпичами. Отражаем по оси наименьшего
+        // Столкновение одного мяча с кирпичами. Отражаем по оси наименьшего
         // перекрытия, чтобы отскок выглядел естественно.
-        _collideBricks() {
-            const b = this.ball;
+        _collideBricks(b) {
             for (const brick of this.bricks) {
                 if (!brick.alive) continue;
                 if (b.x + b.radius < brick.x || b.x - b.radius > brick.x + brick.w ||
@@ -289,8 +380,71 @@
 
                 brick.alive = false;
                 this.score += brick.score;
+                this._maybeDropCapsule(brick);
                 break; // один кирпич за кадр — достаточно
             }
+        }
+
+        // Разрушенный кирпич с некоторым шансом роняет бонус-капсулу.
+        _maybeDropCapsule(brick) {
+            if (Math.random() > 0.16) return;
+            const def = POWERUPS[(Math.random() * POWERUPS.length) | 0];
+            const cx = brick.x + brick.w / 2 - 15;
+            this.capsules.push(new Capsule(cx, brick.y, def));
+        }
+
+        // Применение подобранного бонуса.
+        _applyPowerup(type) {
+            switch (type) {
+                case 'expand':
+                    this.paddle.expand();
+                    break;
+                case 'catch':
+                    this.paddle.sticky = true;
+                    break;
+                case 'slow':
+                    for (const b of this.balls) {
+                        b.speed = Math.max(210, b.speed - 60);
+                        this._rescale(b);
+                    }
+                    break;
+                case 'multi':
+                    this._multiBall();
+                    break;
+                case 'laser':
+                    this.paddle.laser = true;
+                    break;
+                case 'life':
+                    this.lives++;
+                    break;
+            }
+        }
+
+        // Приводит модуль скорости мяча к текущему b.speed.
+        _rescale(b) {
+            const mag = Math.hypot(b.vx, b.vy) || 1;
+            b.vx = (b.vx / mag) * b.speed;
+            b.vy = (b.vy / mag) * b.speed;
+        }
+
+        // Тройной мяч: каждый летящий мяч даёт две копии под углом.
+        _multiBall() {
+            const extra = [];
+            for (const b of this.balls) {
+                if (b.stuck) continue;
+                for (const a of [-0.4, 0.4]) {
+                    const clone = new Ball(this.field);
+                    clone.stuck = false;
+                    clone.speed = b.speed;
+                    clone.x = b.x;
+                    clone.y = b.y;
+                    clone.vx = b.vx;
+                    clone.vy = b.vy;
+                    clone.rotate(a);
+                    extra.push(clone);
+                }
+            }
+            this.balls.push(...extra);
         }
 
         get bricksLeft() {
@@ -299,14 +453,16 @@
             return n;
         }
 
-        // Гибель мяча: минус жизнь, при нуле — конец игры.
+        // Гибель последнего мяча: минус жизнь, при нуле — конец игры.
         _loseLife() {
             this.lives--;
+            this.capsules.length = 0;
+            this.paddle.reset();
+            this.balls = [new Ball(this.field)];
             if (this.lives <= 0) {
                 this.state = 'gameover';
             } else {
                 this.state = 'ready';
-                this.ball.stuck = true;
             }
         }
 
@@ -317,7 +473,12 @@
         _onLaunch() {
             if (this.state === 'ready') {
                 this.state = 'playing';
-                this.ball.launch();
+                for (const b of this.balls) b.launch();
+            } else if (this.state === 'playing') {
+                // Отпустить пойманные мячи (режим Catch).
+                for (const b of this.balls) {
+                    if (b.stuck) { b.stuck = false; b.launch(); b.stickOffset = 0; }
+                }
             } else if (this.state === 'gameover' || this.state === 'win') {
                 this._restart();
             }
@@ -327,18 +488,21 @@
             this.score = 0;
             this.lives = 3;
             this.level = 1;
+            this.capsules.length = 0;
             this.bricks = this._buildBricks();
             this.paddle.reset();
-            this.ball.stuck = true;
+            this.balls = [new Ball(this.field)];
             this.state = 'ready';
         }
 
         _nextLevel() {
             this.level++;
+            this.capsules.length = 0;
             this.bricks = this._buildBricks();
             this.paddle.reset();
-            this.ball.stuck = true;
-            this.ball.speed += 20; // с уровнем становится быстрее
+            const ball = new Ball(this.field);
+            ball.speed += 20 * (this.level - 1); // с уровнем становится быстрее
+            this.balls = [ball];
             this.state = 'ready';
         }
 
@@ -356,24 +520,48 @@
             if (this.input.mouseX !== null) this.paddle.moveTo(this.input.mouseX);
             if (this.input.left) this.paddle.move(-1, dt);
             if (this.input.right) this.paddle.move(1, dt);
+            this.paddle.update(dt);
 
-            if (this.ball.stuck) {
-                this.ball.stickTo(this.paddle);
-                return;
+            // Мячи.
+            const survivors = [];
+            for (const b of this.balls) {
+                if (b.stuck) {
+                    b.stickTo(this.paddle);
+                    survivors.push(b);
+                    continue;
+                }
+                const alive = b.update(dt);
+                this._collideBricks(b);
+                b.bounceOffPaddle(this.paddle);
+                if (alive) survivors.push(b);
             }
+            this.balls = survivors;
 
-            const alive = this.ball.update(dt);
-            this._collideBricks();
-            this.ball.bounceOffPaddle(this.paddle);
-
-            if (!alive) {
+            if (this.balls.length === 0) {
                 this._loseLife();
                 return;
             }
+
+            this._updateCapsules(dt);
+
             if (this.bricksLeft === 0) {
                 if (this.level >= 4) this.state = 'win';
                 else this._nextLevel();
             }
+        }
+
+        _updateCapsules(dt) {
+            const kept = [];
+            for (const cap of this.capsules) {
+                cap.update(dt, this.field.bottom);
+                if (cap.caught(this.paddle)) {
+                    this._applyPowerup(cap.type);
+                    this.score += 100;
+                    continue;
+                }
+                if (!cap.dead) kept.push(cap);
+            }
+            this.capsules = kept;
         }
 
         _render() {
@@ -381,8 +569,9 @@
             ctx.fillStyle = '#0b0b16';
             ctx.fillRect(0, 0, this.width, this.height);
             for (const brick of this.bricks) brick.draw(ctx);
+            for (const cap of this.capsules) cap.draw(ctx);
             this.paddle.draw(ctx);
-            this.ball.draw(ctx);
+            for (const b of this.balls) b.draw(ctx);
             this._drawBorders();
             this._drawHUD();
             this._drawOverlay();
