@@ -16,15 +16,58 @@
         height: 20
     };
 
-    // Палитра кирпичей: цвет + очки за разрушение.
-    const BRICK_COLORS = [
-        { fill: '#e0483c', score: 90 }, // красный
-        { fill: '#e08a3c', score: 80 }, // оранжевый
-        { fill: '#3c74e0', score: 70 }, // синий
-        { fill: '#40c060', score: 60 }, // зелёный
-        { fill: '#d84cd8', score: 50 }, // розовый
-        { fill: '#e0d43c', score: 40 }, // жёлтый
-        { fill: '#4bc8ff', score: 30 }  // голубой
+    // Типы кирпичей: цвет, очки, прочность (hits), indestructible.
+    // Буква — символ в схемах уровней ниже.
+    const BRICK_TYPES = {
+        r: { fill: '#e0483c', score: 90, hits: 1 },
+        o: { fill: '#e08a3c', score: 80, hits: 1 },
+        b: { fill: '#3c74e0', score: 70, hits: 1 },
+        g: { fill: '#40c060', score: 60, hits: 1 },
+        p: { fill: '#d84cd8', score: 50, hits: 1 },
+        y: { fill: '#e0d43c', score: 40, hits: 1 },
+        c: { fill: '#4bc8ff', score: 30, hits: 1 },
+        s: { fill: '#b8bcd0', score: 120, hits: 2 },              // серебро — 2 удара
+        X: { fill: '#d9c34a', score: 0, hits: Infinity, gold: true } // золото — не разбить
+    };
+
+    // Схемы уровней. Каждая строка — ряд из 11 символов ('.' — пусто).
+    const LEVELS = [
+        [
+            'rrrrrrrrrrr',
+            'ooooooooooo',
+            'bbbbbbbbbbb',
+            'ggggggggggg',
+            'ppppppppppp',
+            'yyyyyyyyyyy',
+            'ccccccccccc'
+        ],
+        [
+            'sssssssssss',
+            'r.r.r.r.r.r',
+            '.o.o.o.o.o.',
+            'b.b.b.b.b.b',
+            '.g.g.g.g.g.',
+            'yyyyyyyyyyy',
+            'sssssssssss'
+        ],
+        [
+            '.....r.....',
+            '....ooo....',
+            '...bbbbb...',
+            '..ggggggg..',
+            '.ppppppppp.',
+            'yyyyyyyyyyy',
+            'X.X.X.X.X.X'
+        ],
+        [
+            'X.........X',
+            'X.sssssss.X',
+            'X.s.r.r.s.X',
+            'X.s.ooo.s.X',
+            'X.s.bbb.s.X',
+            'X.sssssss.X',
+            'X.........X'
+        ]
     ];
 
     // ---- Ракетка игрока (Vaus) -------------------------------------------
@@ -203,14 +246,37 @@
 
     // ---- Кирпич ----------------------------------------------------------
     class Brick {
-        constructor(x, y, w, h, color) {
+        constructor(x, y, w, h, def) {
             this.x = x;
             this.y = y;
             this.w = w;
             this.h = h;
-            this.fill = color.fill;
-            this.score = color.score;
+            this.fill = def.fill;
+            this.score = def.score;
+            this.hits = def.hits;
+            this.gold = !!def.gold;
             this.alive = true;
+            this.flash = 0; // короткая вспышка при попадании
+        }
+
+        get destructible() {
+            return this.hits !== Infinity;
+        }
+
+        // Возвращает true, если кирпич разрушен этим попаданием.
+        hit() {
+            this.flash = 1;
+            if (!this.destructible) return false;
+            this.hits--;
+            if (this.hits <= 0) {
+                this.alive = false;
+                return true;
+            }
+            return false;
+        }
+
+        update(dt) {
+            if (this.flash > 0) this.flash = Math.max(0, this.flash - dt * 6);
         }
 
         draw(ctx) {
@@ -218,6 +284,7 @@
             const { x, y, w, h } = this;
             ctx.fillStyle = this.fill;
             ctx.fillRect(x, y, w, h);
+
             // Объёмная фаска: светлый верх/лево, тёмный низ/право.
             ctx.fillStyle = 'rgba(255,255,255,0.35)';
             ctx.fillRect(x, y, w, 2);
@@ -225,6 +292,22 @@
             ctx.fillStyle = 'rgba(0,0,0,0.30)';
             ctx.fillRect(x, y + h - 2, w, 2);
             ctx.fillRect(x + w - 2, y, 2, h);
+
+            // Золото — металлический блик по диагонали.
+            if (this.gold) {
+                ctx.fillStyle = 'rgba(255,255,255,0.5)';
+                ctx.fillRect(x + 3, y + 3, w - 6, 2);
+            }
+            // Серебро с 2 HP — насечка по центру.
+            if (this.hits === 2) {
+                ctx.fillStyle = 'rgba(0,0,0,0.2)';
+                ctx.fillRect(x + w / 2 - 1, y + 3, 2, h - 6);
+            }
+            // Вспышка попадания.
+            if (this.flash > 0) {
+                ctx.fillStyle = 'rgba(255,255,255,' + (this.flash * 0.7) + ')';
+                ctx.fillRect(x, y, w, h);
+            }
         }
     }
 
@@ -360,29 +443,33 @@
             this.fireCooldown = 0;
             this.input.onLaunch = () => this._onLaunch();
 
-            this.bricks = this._buildBricks();
-
             // Состояние партии.
             this.score = 0;
             this.lives = 3;
             this.level = 1;
             this.state = 'ready'; // ready | playing | dead | gameover | win
 
+            this.bricks = this._buildBricks();
+
             this.lastTime = 0;
             this._loop = this._loop.bind(this);
         }
 
-        // Строит сетку кирпичей: каждая строка — свой цвет.
+        // Строит сетку кирпичей по схеме текущего уровня.
         _buildBricks() {
             const bricks = [];
+            const scheme = LEVELS[(this.level - 1) % LEVELS.length];
             const usable = this.field.right - this.field.left;
             const w = (usable - BRICK.gap * (BRICK.cols + 1)) / BRICK.cols;
-            for (let r = 0; r < BRICK.rows; r++) {
-                const color = BRICK_COLORS[r % BRICK_COLORS.length];
+            for (let r = 0; r < scheme.length; r++) {
+                const row = scheme[r];
                 for (let c = 0; c < BRICK.cols; c++) {
+                    const ch = row[c];
+                    const def = BRICK_TYPES[ch];
+                    if (!def) continue; // '.' — пустая клетка
                     const x = this.field.left + BRICK.gap + c * (w + BRICK.gap);
                     const y = BRICK.top + r * (BRICK.height + BRICK.gap);
-                    bricks.push(new Brick(x, y, w, BRICK.height, color));
+                    bricks.push(new Brick(x, y, w, BRICK.height, def));
                 }
             }
             return bricks;
@@ -411,9 +498,11 @@
                     b.vy = -b.vy;
                 }
 
-                brick.alive = false;
-                this.score += brick.score;
-                this._maybeDropCapsule(brick);
+                const destroyed = brick.hit();
+                if (destroyed) {
+                    this.score += brick.score;
+                    this._maybeDropCapsule(brick);
+                }
                 break; // один кирпич за кадр — достаточно
             }
         }
@@ -480,9 +569,10 @@
             this.balls.push(...extra);
         }
 
+        // Считаем только разрушаемые кирпичи — золото не мешает победе.
         get bricksLeft() {
             let n = 0;
-            for (const b of this.bricks) if (b.alive) n++;
+            for (const b of this.bricks) if (b.alive && b.destructible) n++;
             return n;
         }
 
@@ -561,6 +651,8 @@
             if (this.input.right) this.paddle.move(1, dt);
             this.paddle.update(dt);
 
+            for (const brick of this.bricks) brick.update(dt);
+
             // Мячи.
             const survivors = [];
             for (const b of this.balls) {
@@ -610,10 +702,12 @@
                     if (!brick.alive) continue;
                     if (laser.x > brick.x && laser.x < brick.x + brick.w &&
                         laser.y < brick.y + brick.h && laser.y > brick.y) {
-                        brick.alive = false;
-                        this.score += brick.score;
-                        this._maybeDropCapsule(brick);
-                        hit = true;
+                        const destroyed = brick.hit();
+                        if (destroyed) {
+                            this.score += brick.score;
+                            this._maybeDropCapsule(brick);
+                        }
+                        hit = true; // выстрел гасится о любой кирпич (включая золото)
                         break;
                     }
                 }
