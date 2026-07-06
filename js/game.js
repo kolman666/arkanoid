@@ -162,6 +162,7 @@
             this.vy = 0;
             this.x = 0;
             this.y = 0;
+            this.trail = []; // след для эффекта движения
         }
 
         // Поворачивает вектор скорости на заданный угол (для мультимяча).
@@ -185,6 +186,9 @@
         update(dt) {
             if (this.stuck) return true;
 
+            this.trail.push({ x: this.x, y: this.y });
+            if (this.trail.length > 8) this.trail.shift();
+
             this.x += this.vx * dt;
             this.y += this.vy * dt;
 
@@ -205,13 +209,14 @@
         }
 
         // Отскок от ракетки: угол зависит от точки касания.
+        // Возвращает true, если произошёл отскок.
         bounceOffPaddle(paddle) {
-            if (this.vy <= 0) return;
+            if (this.vy <= 0) return false;
             const withinX = this.x + this.radius > paddle.x &&
                 this.x - this.radius < paddle.x + paddle.width;
             const atLevel = this.y + this.radius >= paddle.y &&
                 this.y - this.radius < paddle.y + paddle.height;
-            if (!withinX || !atLevel) return;
+            if (!withinX || !atLevel) return false;
 
             const hit = (this.x - paddle.centerX) / (paddle.width / 2); // -1..1
             const angle = hit * (Math.PI / 3); // до 60° от вертикали
@@ -223,6 +228,7 @@
                 this.stuck = true;
                 this.stickOffset = this.x - paddle.centerX;
             }
+            return true;
         }
 
         stickTo(paddle) {
@@ -231,6 +237,18 @@
         }
 
         draw(ctx) {
+            // След.
+            for (let i = 0; i < this.trail.length; i++) {
+                const t = this.trail[i];
+                const a = (i / this.trail.length) * 0.35;
+                ctx.globalAlpha = a;
+                ctx.fillStyle = '#8888ff';
+                ctx.beginPath();
+                ctx.arc(t.x, t.y, this.radius * (i / this.trail.length), 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.globalAlpha = 1;
+
             const grad = ctx.createRadialGradient(
                 this.x - 2, this.y - 2, 1,
                 this.x, this.y, this.radius
@@ -420,6 +438,77 @@
         }
     }
 
+    // ---- Частица (осколок кирпича) ---------------------------------------
+    class Particle {
+        constructor(x, y, color) {
+            this.x = x;
+            this.y = y;
+            const a = Math.random() * Math.PI * 2;
+            const sp = 40 + Math.random() * 140;
+            this.vx = Math.cos(a) * sp;
+            this.vy = Math.sin(a) * sp - 40;
+            this.life = 1;
+            this.color = color;
+            this.size = 2 + Math.random() * 3;
+        }
+
+        update(dt) {
+            this.vy += 300 * dt; // гравитация
+            this.x += this.vx * dt;
+            this.y += this.vy * dt;
+            this.life -= dt * 1.7;
+        }
+
+        draw(ctx) {
+            if (this.life <= 0) return;
+            ctx.globalAlpha = Math.max(0, this.life);
+            ctx.fillStyle = this.color;
+            ctx.fillRect(this.x, this.y, this.size, this.size);
+            ctx.globalAlpha = 1;
+        }
+    }
+
+    // ---- Звук (WebAudio, без внешних файлов) -----------------------------
+    class Sound {
+        constructor() {
+            this.ctx = null;
+            this.enabled = true;
+        }
+
+        _ac() {
+            if (!this.ctx) {
+                const AC = window.AudioContext || window.webkitAudioContext;
+                if (AC) this.ctx = new AC();
+                else this.enabled = false;
+            }
+            return this.ctx;
+        }
+
+        beep(freq, dur, type = 'square', gain = 0.06) {
+            if (!this.enabled) return;
+            const ac = this._ac();
+            if (!ac) return;
+            const o = ac.createOscillator();
+            const g = ac.createGain();
+            o.type = type;
+            o.frequency.value = freq;
+            o.connect(g);
+            g.connect(ac.destination);
+            const t = ac.currentTime;
+            g.gain.setValueAtTime(gain, t);
+            g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+            o.start(t);
+            o.stop(t + dur);
+        }
+
+        wall() { this.beep(200, 0.04); }
+        paddle() { this.beep(320, 0.05); }
+        brick() { this.beep(480, 0.05); }
+        solid() { this.beep(150, 0.05, 'triangle'); }
+        power() { this.beep(660, 0.1, 'sine'); this.beep(990, 0.12, 'sine'); }
+        lose() { this.beep(180, 0.35, 'sawtooth'); }
+    }
+
     // ---- Игра ------------------------------------------------------------
     class Arkanoid {
         constructor(canvas) {
@@ -440,7 +529,10 @@
             this.balls = [new Ball(this.field)];
             this.capsules = [];
             this.lasers = [];
+            this.particles = [];
             this.fireCooldown = 0;
+            this.sound = new Sound();
+            this.stars = this._makeStars(60);
             this.input.onLaunch = () => this._onLaunch();
 
             // Состояние партии.
@@ -454,6 +546,29 @@
 
             this.lastTime = 0;
             this._loop = this._loop.bind(this);
+        }
+
+        // Звёзды фона (статичные, с мерцанием по фазе).
+        _makeStars(n) {
+            const stars = [];
+            for (let i = 0; i < n; i++) {
+                stars.push({
+                    x: BORDER + Math.random() * (this.width - 2 * BORDER),
+                    y: BORDER + Math.random() * (this.height - BORDER),
+                    r: Math.random() * 1.4 + 0.3,
+                    ph: Math.random() * Math.PI * 2
+                });
+            }
+            return stars;
+        }
+
+        _spawnParticles(brick) {
+            const cx = brick.x + brick.w / 2;
+            const cy = brick.y + brick.h / 2;
+            const n = 8 + (Math.random() * 4 | 0);
+            for (let i = 0; i < n; i++) {
+                this.particles.push(new Particle(cx, cy, brick.fill));
+            }
         }
 
         // Строит сетку кирпичей по схеме текущего уровня.
@@ -502,7 +617,11 @@
                 const destroyed = brick.hit();
                 if (destroyed) {
                     this.score += brick.score;
+                    this._spawnParticles(brick);
                     this._maybeDropCapsule(brick);
+                    this.sound.brick();
+                } else {
+                    this.sound.solid();
                 }
                 break; // один кирпич за кадр — достаточно
             }
@@ -580,6 +699,7 @@
         // Гибель последнего мяча: минус жизнь, при нуле — конец игры.
         _loseLife() {
             this.lives--;
+            this.sound.lose();
             this.capsules.length = 0;
             this.lasers.length = 0;
             this.paddle.reset();
@@ -667,7 +787,7 @@
                 }
                 const alive = b.update(dt);
                 this._collideBricks(b);
-                b.bounceOffPaddle(this.paddle);
+                if (b.bounceOffPaddle(this.paddle)) this.sound.paddle();
                 if (alive) survivors.push(b);
             }
             this.balls = survivors;
@@ -679,6 +799,7 @@
 
             this._updateCapsules(dt);
             this._updateLasers(dt);
+            this._updateParticles(dt);
 
             if (this.bricksLeft === 0) {
                 if (this.level >= 4) this.state = 'win';
@@ -720,6 +841,15 @@
             this.lasers = kept;
         }
 
+        _updateParticles(dt) {
+            const kept = [];
+            for (const p of this.particles) {
+                p.update(dt);
+                if (p.life > 0) kept.push(p);
+            }
+            this.particles = kept;
+        }
+
         _updateCapsules(dt) {
             const kept = [];
             for (const cap of this.capsules) {
@@ -727,6 +857,7 @@
                 if (cap.caught(this.paddle)) {
                     this._applyPowerup(cap.type);
                     this.score += 100;
+                    this.sound.power();
                     continue;
                 }
                 if (!cap.dead) kept.push(cap);
@@ -736,11 +867,18 @@
 
         _render() {
             const ctx = this.ctx;
-            ctx.fillStyle = '#0b0b16';
+            // Фон-градиент + звёзды.
+            const bg = ctx.createLinearGradient(0, 0, 0, this.height);
+            bg.addColorStop(0, '#0d0d1e');
+            bg.addColorStop(1, '#07070f');
+            ctx.fillStyle = bg;
             ctx.fillRect(0, 0, this.width, this.height);
+            this._drawStars();
+
             for (const brick of this.bricks) brick.draw(ctx);
             for (const cap of this.capsules) cap.draw(ctx);
             for (const laser of this.lasers) laser.draw(ctx);
+            for (const p of this.particles) p.draw(ctx);
             this.paddle.draw(ctx);
             for (const b of this.balls) b.draw(ctx);
             this._drawBorders();
@@ -884,6 +1022,19 @@
                 ctx.font = 'bold 18px monospace';
                 ctx.fillText('НАЖМИТЕ ПРОБЕЛ', cx, 470);
             }
+        }
+
+        _drawStars() {
+            const ctx = this.ctx;
+            for (const s of this.stars) {
+                const tw = 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(this.time * 2 + s.ph));
+                ctx.globalAlpha = tw;
+                ctx.fillStyle = '#9a9ad0';
+                ctx.beginPath();
+                ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.globalAlpha = 1;
         }
 
         _drawBorders() {
