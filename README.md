@@ -67,4 +67,4 @@ js/game.js      вся игровая логика (изолирована в II
 
 ## Резюме
 
-Резюме на hh.ru: _<!-- TODO: вставьте сюда ссылку на ваше резюме на hh.ru -->_
+Резюме на hh.ru: https://yaroslavl.hh.ru/resume/cfbdabcaff0c755e9b0039ed1f4b76305a7a52?hhtmFrom=applicant_profile
